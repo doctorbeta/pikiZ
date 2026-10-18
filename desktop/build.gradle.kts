@@ -79,9 +79,9 @@ compose.desktop {
         mainClass = "dev.cluvex.zedsecure.desktop.GuiKt"
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Rpm, TargetFormat.AppImage, TargetFormat.Msi, TargetFormat.Dmg)
-            packageName = "ZedSecure"
+            packageName = "PikiZ"
             packageVersion = zedVersion
-            description = "ZedSecure VPN client"
+            description = "PikiZ VPN client"
             vendor = "Cluvex Studio"
             linux {
                 iconFile.set(project.file("icons/zedsecure.png"))
@@ -91,7 +91,7 @@ compose.desktop {
             }
             windows {
                 iconFile.set(project.file("icons/zedsecure.ico"))
-                menuGroup = "ZedSecure"
+                menuGroup = "PikiZ"
                 shortcut = true
             }
             macOS {
