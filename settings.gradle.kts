@@ -26,7 +26,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ZedSecure"
+rootProject.name = "PikiZ"
 include(":app")
 include(":shared")
 include(":desktop")
