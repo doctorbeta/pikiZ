@@ -1,0 +1,111 @@
+name: piki-build
+
+# Builds the "Piki Zed" APK entirely on GitHub - no computer needed.
+# Run it from the Actions tab (Run workflow). Branding is applied at build time.
+#
+# Signing:
+#  - If the repo secrets KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD exist,
+#    the APK is signed with YOUR key (use this for anything you hand to other people).
+#  - Otherwise a throw-away TEST key is generated. The APK installs and works, but every build
+#    has a different signature, so it cannot be updated in place. Test use only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram:
+        description: "Your Telegram handle without @ (optional)"
+        required: false
+        default: ""
+      privacy_url:
+        description: "Your privacy-policy URL (optional)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with: { distribution: temurin, java-version: "21" }
+      - uses: gradle/actions/setup-gradle@v5
+
+      - name: Apply Piki Zed branding
+        env:
+          TG: ${{ inputs.telegram }}
+          PRIVACY: ${{ inputs.privacy_url }}
+        run: |
+          set -euo pipefail
+          APP_ID="com.piki.vpn"; NAME="Piki Zed"
+          REPO="$GITHUB_REPOSITORY"; OWNER="$GITHUB_REPOSITORY_OWNER"
+          UPDATE_KT=shared/src/commonMain/kotlin/dev/cluvex/zedsecure/data/update/UpdateChecker.kt
+          ABOUT_KT=shared/src/commonMain/kotlin/dev/cluvex/zedsecure/ui/settings/AboutSheet.kt
+          PRIVACY_KT=shared/src/commonMain/kotlin/dev/cluvex/zedsecure/ui/settings/PrivacyPage.kt
+          for f in app/build.gradle.kts "$UPDATE_KT" "$ABOUT_KT" "$PRIVACY_KT"; do [ -f "$f" ] || { echo "::error::$f is missing (upstream layout changed)"; exit 1; }; done
+
+          sed -i -E "s|(applicationId = \")[^\"]*(\")|\1${APP_ID}\2|" app/build.gradle.kts
+          sed -i -E "s|(const val PACKAGE = \")[^\"]*(\")|\1${APP_ID}\2|" "$UPDATE_KT"
+          sed -i -E "s|(const val REPO = \")[^\"]*(\")|\1${REPO}\2|" "$UPDATE_KT"
+          sed -i -E "s|(private const val GITHUB_URL = \")[^\"]*(\")|\1https://github.com/${OWNER}\2|" "$ABOUT_KT"
+          sed -i -E "s|(subtitle = \"github\.com/)[^/\"]*(\")|\1${OWNER}\2|" "$ABOUT_KT"
+          if [ -n "$TG" ]; then
+            TG="${TG#@}"
+            sed -i -E "s|(private const val TELEGRAM_URL = \")[^\"]*(\")|\1https://t.me/${TG}\2|" "$ABOUT_KT"
+            sed -i -E "s|(subtitle = \"t\.me/)[^\"]*(\")|\1${TG}\2|" "$ABOUT_KT"
+          fi
+          if [ -n "$PRIVACY" ]; then
+            sed -i -E "s|(private const val POLICY_URL = \")[^\"]*(\")|\1${PRIVACY}\2|" "$PRIVACY_KT"
+          fi
+          files=$(ls app/src/main/res/values*/strings.xml shared/src/commonMain/composeResources/values*/strings.xml)
+          sed -i -e "s/Zed Secure/${NAME}/g" -e "s/ZedSecure/${NAME}/g" -e "s/PikiZ/${NAME}/g" $files
+
+          echo "applicationId:"; grep -n 'applicationId = ' app/build.gradle.kts
+          echo "update repo:";   grep -n 'const val REPO' "$UPDATE_KT"
+          echo "app name:";      grep -n 'name="app_name"' app/src/main/res/values/strings.xml
+
+      - name: Take every engine from its own build
+        run: ./tools/get-cores.sh android
+
+      - name: Choose the signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 -d > release.keystore
+            STORE_PW="$KEYSTORE_PASSWORD"; KEY_PW="$KEY_PASSWORD"; ALIAS="$KEY_ALIAS"
+            echo "Signing with the repository's own key."
+          else
+            STORE_PW="$(openssl rand -hex 16)"; KEY_PW="$STORE_PW"; ALIAS="piki-test"
+            echo "::add-mask::$STORE_PW"
+            keytool -genkeypair -keystore release.keystore -alias "$ALIAS" -keyalg RSA -keysize 2048 \
+              -validity 10000 -storepass "$STORE_PW" -keypass "$KEY_PW" -dname "CN=Piki Zed test build"
+            echo "::warning::No signing secrets found - this is a TEST build signed with a throw-away key."
+          fi
+          { echo "storeFile=release.keystore"; echo "storePassword=$STORE_PW"
+            echo "keyPassword=$KEY_PW"; echo "keyAlias=$ALIAS"; } > keystore.properties
+
+      - name: Build
+        run: ./gradlew --warning-mode all :app:assembleRelease
+
+      - name: Collect the APKs
+        run: |
+          set -e
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk dist/
+          ls -l dist
+
+      - name: Forget the key
+        if: always()
+        run: shred -u release.keystore keystore.properties 2>/dev/null || rm -f release.keystore keystore.properties
+
+      - uses: actions/upload-artifact@v7
+        with: { name: piki-zed-apks, path: dist/*, retention-days: 30 }
